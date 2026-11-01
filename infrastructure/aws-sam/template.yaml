@@ -1,0 +1,167 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: FloodLens AI — API Gateway + Lambda backend infrastructure
+
+Parameters:
+  AppEnv:
+    Type: String
+    Default: dev
+    AllowedValues: [local, dev, demo, prod]
+    Description: Deployment environment (local, dev, demo, prod)
+  FrontendOrigin:
+    Type: String
+    Default: http://localhost:5173
+    Description: >
+      The Amplify Hosting frontend URL for CORS.
+      In production, set to your Amplify domain (e.g. https://main.d12345.amplifyapp.com).
+      This must match exactly — CORS will only allow this origin.
+  ApiGatewayStage:
+    Type: String
+    Default: prod
+    Description: API Gateway stage name (prod, demo, dev)
+
+Globals:
+  Function:
+    Runtime: python3.12
+    MemorySize: 512
+    Timeout: 30
+    Environment:
+      Variables:
+        APP_ENV: !Ref AppEnv
+        API_V1_PREFIX: /api/v1
+        FRONTEND_ORIGIN: !Ref FrontendOrigin
+
+Resources:
+  # --- API Gateway HTTP API ---
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: floodlens-api
+      Description: FloodLens AI HTTP API
+      CorsConfiguration:
+        AllowOrigins:
+          - !Ref FrontendOrigin
+        AllowMethods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+        AllowHeaders: [Content-Type, X-User-Role, X-User-Id, X-User-Email, X-User-Organisation]
+        MaxAge: 3600
+
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: prod
+      AutoDeploy: true
+
+  # --- Lambda: FastAPI main handler ---
+  FloodLensApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../../backend
+      Handler: app.lambda_handler.handler
+      MemorySize: 512
+      Timeout: 30
+      Environment:
+        Variables:
+          DATABASE_URL: !Sub 'postgresql+psycopg://${DBUser}:${DBPassword}@${DBEndpoint}:5432/${DBName}'
+          S3_MEDIA_BUCKET: !Ref MediaBucket
+          AI_PROVIDER_MODE: mock
+          DEMO_MODE: 'true'
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref MediaBucket
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt MediaAnalysisQueue.QueueName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: '*'
+      Events:
+        ApiEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /{proxy+}
+            Method: ANY
+        HealthLive:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /health/live
+            Method: GET
+        HealthReady:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /health/ready
+            Method: GET
+
+  # --- SQS: Media Analysis Queue ---
+  MediaAnalysisQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: floodlens-media-analysis
+      VisibilityTimeout: 120
+      RedrivePolicy:
+        DeadLetterTargetArn: !GetAtt MediaAnalysisDLQ.Arn
+        maxReceiveCount: 3
+
+  MediaAnalysisDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: floodlens-media-analysis-dlq
+
+  # --- Lambda: SQS Worker ---
+  FloodLensWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../../backend
+      Handler: app.workers.media_analysis.sqs_handler
+      MemorySize: 1024
+      Timeout: 120
+      Environment:
+        Variables:
+          DATABASE_URL: !Sub 'postgresql+psycopg://${DBUser}:${DBPassword}@${DBEndpoint}:5432/${DBName}'
+          S3_MEDIA_BUCKET: !Ref MediaBucket
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt MediaAnalysisQueue.Arn
+            BatchSize: 5
+            MaximumBatchingWindowInSeconds: 10
+
+  # --- S3 Bucket: Media ---
+  MediaBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'floodlens-media-${AWS::Region}-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # --- RDS PostgreSQL ---
+  FloodLensDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: postgres
+      EngineVersion: '16'
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: 20
+      DBName: floodlens
+      MasterUsername: floodlens
+      MasterUserPassword: !Ref DBPassword
+      EnablePerformanceInsights: true
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+  MediaBucket:
+    Description: S3 media bucket name
+    Value: !Ref MediaBucket
+  SQSQueueUrl:
+    Description: SQS media analysis queue URL
+    Value: !Ref MediaAnalysisQueue

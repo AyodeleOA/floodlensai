@@ -1,0 +1,16 @@
+{
+  "name": "FloodLens AI",
+  "short_name": "FloodLens",
+  "description": "Community-powered flood observation and risk mapping for African communities.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#3380ff",
+  "icons": [
+    {
+      "src": "/floodlens-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
