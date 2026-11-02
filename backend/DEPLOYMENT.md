@@ -71,7 +71,7 @@ You will be prompted for:
 - **Stack Name**: `floodlens-ai`
 - **AWS Region**: `us-east-1` (or your preferred region)
 - **AppEnv**: `demo` or `prod`
-- **FrontendOrigin**: Your Amplify frontend URL (e.g. `https://main.d12345.amplifyapp.com`)
+- **FrontendOrigin**: Your Amplify frontend URL (e.g. `https://main.dmpm2yei4pgxa.amplifyapp.com/`)
 - **ApiGatewayStage**: `prod`
 - **Confirm changes before deploy**: Y
 - **Allow SAM CLI IAM role creation**: Y

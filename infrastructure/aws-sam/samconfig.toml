@@ -1,0 +1,14 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "floodlens-ai"
+resolve_s3 = true
+s3_prefix = "floodlens-ai"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+disable_rollback = true
+parameter_overrides = "AppEnv=\"prod\" FrontendOrigin=\"https://main.dmpm2yei4pgxa.amplifyapp.com\" ApiGatewayStage=\"prod\" DBName=\"floodlens\" DBUser=\"floodlens\" AWSRegion=\"us-east-1\""
+image_repositories = []
+
+[default.global.parameters]
+region = "us-east-1"

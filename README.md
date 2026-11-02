@@ -144,23 +144,9 @@ Secrets Manager --> API and worker secrets
 CloudWatch ------> logs, metrics, alarms
 ```
 
-### Frontend (AWS Amplify Hosting)
+Full backend deployment guide: [backend/DEPLOYMENTv1.md](backend/DEPLOYMENTv1.md)
 
-1. Push code to GitHub repository `floodlens-ai`
-2. Create an AWS Amplify Hosting application connected to the repo
-3. Select `main` branch for deployment
-4. Set frontend app root to `frontend`
-5. The `amplify.yml` at the repo root handles the build
-6. Configure environment variables in Amplify:
-   - `VITE_API_BASE_URL` — your deployed API Gateway HTTPS URL (e.g. `https://abc123.execute-api.us-east-1.amazonaws.com/prod`)
-   - Do NOT add `MODEL_API_KEY`, `DATABASE_URL`, or any secrets to Amplify env vars
-7. SPA rewrite rules are handled by Amplify for client-side routes
-
-### Backend (API Gateway + Lambda)
-
-Detailed deployment guide: [backend/DEPLOYMENT.md](backend/DEPLOYMENT.md)
-
-#### Quick deployment with AWS SAM
+### Step 1: Deploy Backend (API Gateway + Lambda via SAM)
 
 ```bash
 cd infrastructure/aws-sam
@@ -174,38 +160,95 @@ When prompted:
 - **AppEnv**: `demo` or `prod`
 - **FrontendOrigin**: your Amplify frontend URL (e.g. `https://main.d12345.amplifyapp.com`)
 - **ApiGatewayStage**: `prod`
+- **DBName**: `floodlens`
+- **DBUser**: `floodlens`
+- **DBPassword**: set a strong alphanumeric password (8-41 chars)
 
-#### Post-deployment steps
+SAM provisions: API Gateway HTTP API, FastAPI Lambda, SQS queue + DLQ, worker Lambda, S3 bucket, RDS PostgreSQL.
 
-1. Run database migrations against RDS:
-   ```bash
-   export DATABASE_URL="postgresql+psycopg://<user>:<password>@<rds-endpoint>:5432/floodlens"
-   alembic -c backend/alembic.ini upgrade head
-   ```
+After deployment, note the `ApiUrl` output — this is your API Gateway endpoint.
 
-2. Store secrets in AWS Secrets Manager:
-   - `MODEL_API_KEY` — Meta Model API key
-   - `DATABASE_URL` — RDS connection string
-   - Open-weight endpoint keys (if enabled)
+### Step 2: Run Database Migrations on RDS
 
-3. Set `VITE_API_BASE_URL` in Amplify to the API Gateway URL from SAM output
+```bash
+export DATABASE_URL="postgresql+psycopg://floodlens:<password>@<rds-endpoint>:5432/floodlens"
+alembic -c backend/alembic.ini upgrade head
+```
 
-4. Test the deployed API:
-   ```bash
-   export API_URL="https://your-api-id.execute-api.us-east-1.amazonaws.com/prod"
-   curl $API_URL/health/live
-   curl $API_URL/api/v1/system/capabilities | python -m json.tool
-   ```
+### Step 3: Store Secrets in AWS Secrets Manager
+
+```bash
+aws secretsmanager create-secret \
+  --name floodlens/model-api-key \
+  --secret-string "your-meta-api-key"
+
+aws secretsmanager create-secret \
+  --name floodlens/db-credentials \
+  --secret-string '{"username":"floodlens","password":"<password>","host":"<rds-endpoint>","port":5432,"dbname":"floodlens"}'
+```
+
+Never store secrets in Lambda env vars directly or in Git. The Lambda has IAM permission to read from Secrets Manager.
+
+### Step 4: Deploy Frontend (AWS Amplify Hosting)
+
+1. Push code to GitHub repository `floodlens-ai`
+2. In AWS Console → Amplify Hosting → Create app → Connect to GitHub
+3. Select the repository and `main` branch
+4. The `amplify.yml` at the repo root handles the build automatically
+5. Set Amplify environment variables:
+
+| Variable | Value |
+|---|---|
+| `VITE_API_BASE_URL` | Your API Gateway HTTPS URL (e.g. `https://abc123.execute-api.us-east-1.amazonaws.com/prod`) |
+
+   Do NOT set `MODEL_API_KEY`, `DATABASE_URL`, or any secrets in Amplify.
+
+6. Deploy and verify the frontend loads
+
+### Step 5: Configure CORS
+
+Update the SAM stack with your Amplify domain:
+```bash
+cd infrastructure/aws-sam
+sam deploy --parameter-overrides FrontendOrigin=https://main.d12345.amplifyapp.com
+```
+
+### Step 6: Enable AI Features (Optional)
+
+To enable live Meta Model API calls:
+1. Ensure `MODEL_API_KEY` is stored in Secrets Manager
+2. Update Lambda environment:
+   - `AI_PROVIDER_MODE=live`
+   - `ENABLE_AI_IMAGE_ANALYSIS=true`
+   - `ENABLE_AI_VOICE_TRANSCRIPTION=true` (if needed)
+   - `ENABLE_SAM_SEGMENTATION=true` (if needed)
+   - `DEMO_MODE=false`
+3. Redeploy: `sam deploy`
+
+### Step 7: Verify Deployment
+
+```bash
+API_URL="https://your-api-id.execute-api.us-east-1.amazonaws.com/prod"
+
+# Health check
+curl $API_URL/health/live
+
+# System capabilities
+curl $API_URL/api/v1/system/capabilities
+
+# Map summary
+curl $API_URL/api/v1/map/summary
+```
 
 ### Production Environment Configuration
 
-**Frontend (Amplify env vars):**
+**Frontend (Amplify env vars — public only):**
 
-| Variable | Value | Example |
-|---|---|---|
-| `VITE_API_BASE_URL` | API Gateway HTTPS URL | `https://abc123.execute-api.us-east-1.amazonaws.com/prod` |
+| Variable | Example |
+|---|---|
+| `VITE_API_BASE_URL` | `https://abc123.execute-api.us-east-1.amazonaws.com/prod` |
 
-**Backend (Lambda env vars):**
+**Backend (Lambda env vars / Secrets Manager):**
 
 | Variable | Value | Source |
 |---|---|---|
@@ -214,8 +257,10 @@ When prompted:
 | `DATABASE_URL` | RDS connection string | Secrets Manager |
 | `S3_MEDIA_BUCKET` | S3 bucket name | Direct |
 | `MODEL_API_KEY` | Meta API key | Secrets Manager |
-| `AI_PROVIDER_MODE` | `live` | Direct |
+| `AI_PROVIDER_MODE` | `live` or `mock` | Direct |
 | `ENABLE_AI_IMAGE_ANALYSIS` | `true` | Direct |
+| `ENABLE_AI_VOICE_TRANSCRIPTION` | `true` | Direct |
+| `ENABLE_SAM_SEGMENTATION` | `true` | Direct |
 | `SQS_MEDIA_ANALYSIS_QUEUE_URL` | SQS queue URL | Direct |
 | `DEMO_MODE` | `false` | Direct |
 
@@ -233,6 +278,13 @@ When prompted:
 | Secrets | AWS Secrets Manager |
 | Monitoring | CloudWatch (logs, metrics, alarms) |
 | Auth | Amazon Cognito (staff accounts) |
+
+### Teardown
+
+```bash
+cd infrastructure/aws-sam
+sam delete --stack-name floodlens-ai
+```
 
 ## License
 

@@ -1,433 +1,215 @@
-# AWS Lambda Deployment Guide
+# FloodLens AI — Backend Deployment Guide (v1)
 
-This guide covers deploying the AfriFashion3D API to AWS Lambda.
+## Architecture
 
-## Deployment Options
-
-1. **Serverless Framework** (Recommended for development)
-2. **AWS SAM** (Recommended for production)
-3. **Manual Deployment** (For learning/testing)
-
----
-
-## Option 1: Serverless Framework Deployment
-
-### Prerequisites
-```bash
-npm install -g serverless
-npm install --save-dev serverless-python-requirements serverless-dotenv-plugin
+```
+Amplify Hosting (React frontend)
+        │ HTTPS
+        ▼
+API Gateway HTTP API ──► Lambda (FastAPI + Mangum)
+                              │
+                   ┌──────────┼──────────┐
+                   │          │          │
+                   ▼          ▼          ▼
+              RDS PG      S3 Media    SQS Queue
+              + PostGIS    Bucket     (analysis jobs)
+                                        │
+                                        ▼
+                                   Worker Lambda
+                                   (SQS-triggered)
+                                        │
+                                   ┌────┴────┐
+                                   ▼         ▼
+                              Meta API   Secrets Manager
+                              (Muse, SAM)
 ```
 
-### Steps
+## Prerequisites
 
-1. **Configure environment variables**
+- AWS CLI configured with appropriate credentials
+- AWS SAM CLI installed (`pip install aws-sam-cli`)
+- Python 3.12 (for local testing)
+- PostgreSQL with PostGIS (for local development only)
+- No Docker required
+
+## Step 1: Local Development Setup
+
+```powershell
+# Create virtual environment
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e ".[dev]"
+```
+
+Configure local PostgreSQL/PostGIS:
+```sql
+CREATE DATABASE floodlens;
+CREATE USER floodlens WITH PASSWORD 'floodlens';
+GRANT ALL PRIVILEGES ON DATABASE floodlens TO floodlens;
+\connect floodlens
+CREATE EXTENSION IF NOT EXISTS postgis;
+```
+
 ```bash
 cp .env.example .env
-# Edit .env with your actual values
+# Edit .env — set DATABASE_URL, keep AI_PROVIDER_MODE=mock for local
+alembic -c backend/alembic.ini upgrade head
+uvicorn app.main:app --app-dir backend --reload --host 127.0.0.1 --port 8000
 ```
 
-2. **Deploy to AWS**
+Verify: http://localhost:8000/docs
+
+## Step 2: Deploy Backend to AWS (API Gateway + Lambda)
+
+### 2.1 Build and deploy with SAM
+
 ```bash
-# Deploy to dev stage
-serverless deploy --stage dev
-
-# Deploy to production
-serverless deploy --stage prod
-```
-
-3. **View logs**
-```bash
-serverless logs -f api --tail
-```
-
-4. **Remove deployment**
-```bash
-serverless remove --stage dev
-```
-
-### Serverless Framework Benefits
-- Automatic API Gateway setup
-- Easy environment management
-- Built-in logging
-- Simple rollback
-
----
-
-## Option 2: AWS SAM Deployment
-
-### Prerequisites
-```bash
-# Install AWS SAM CLI
-pip install aws-sam-cli
-
-# Or using Homebrew (macOS)
-brew install aws-sam-cli
-```
-
-### Steps
-
-1. **Build the application**
-```bash
+cd infrastructure/aws-sam
 sam build
-```
-
-2. **Deploy (guided)**
-```bash
 sam deploy --guided
 ```
 
-You'll be prompted for:
-- Stack name: `afrifashion3d-api`
-- AWS Region: `us-east-1`
-- SecretKey: Your JWT secret (min 32 chars)
-- S3BucketName: Your bucket name
-- AllowedOrigins: Your frontend URLs
-- Environment: `production`
+SAM will prompt for:
+- **Stack Name:** `floodlens-ai`
+- **AWS Region:** your target region (e.g. `us-east-1`)
+- **AppEnv:** `demo` (for demo deployment) or `prod`
+- **FrontendOrigin:** your Amplify URL (e.g. `https://main.d12345.amplifyapp.com`)
+- **ApiGatewayStage:** `prod`
+- **DBName:** `floodlens`
+- **DBUser:** `floodlens`
+- **DBPassword:** set a strong alphanumeric password (8-41 chars)
+- **Confirm changes before deploy:** y
+- **Allow SAM CLI IAM role creation:** y
+- **Save arguments to samconfig.toml:** y
 
-3. **Deploy (subsequent deployments)**
+SAM provisions:
+- API Gateway HTTP API (Lambda proxy integration)
+- FastAPI Lambda function (Python 3.12 + Mangum)
+- SQS media analysis queue with dead-letter queue
+- SQS-triggered worker Lambda
+- S3 media bucket (private, block-public-access)
+- RDS PostgreSQL instance
+
+### 2.2 Note the outputs
+
+After deployment, SAM outputs the `ApiUrl`. This is your API Gateway endpoint:
+```
+https://abc123.execute-api.us-east-1.amazonaws.com/prod
+```
+
+### 2.3 Verify the health endpoint
+
 ```bash
-sam deploy
+curl https://abc123.execute-api.us-east-1.amazonaws.com/prod/health/live
+# Expected: {"status":"ok","timestamp":"..."}
 ```
 
-4. **View logs**
+## Step 3: Run Database Migrations on RDS
+
 ```bash
-sam logs -n FashionApiFunction --tail
+# Set DATABASE_URL to the RDS endpoint from SAM outputs
+export DATABASE_URL="postgresql+psycopg://floodlens:<password>@<rds-endpoint>:5432/floodlens"
+alembic -c backend/alembic.ini upgrade head
 ```
 
-5. **Delete stack**
+## Step 4: Configure Secrets in AWS Secrets Manager
+
+Store these secrets in AWS Secrets Manager (never in env vars or Git):
+
 ```bash
-sam delete
+aws secretsmanager create-secret \
+  --name floodlens/model-api-key \
+  --secret-string "your-meta-api-key"
+
+aws secretsmanager create-secret \
+  --name floodlens/db-credentials \
+  --secret-string '{"username":"floodlens","password":"<password>","engine":"postgres","host":"<rds-endpoint>","port":5432,"dbname":"floodlens"}'
 ```
 
-### SAM Benefits
-- Infrastructure as Code
-- Local testing with `sam local`
-- CloudFormation integration
-- Production-ready
+The Lambda function has IAM permission to read from Secrets Manager.
+Update the Lambda environment to fetch secrets at runtime:
 
----
-
-## Option 3: Manual Lambda Deployment
-
-### Steps
-
-1. **Create deployment package**
 ```bash
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt -t package/
-
-# Copy application code
-cp -r app package/
-cp lambda_function.py package/
-cp main.py package/
-
-# Create ZIP
-cd package
-zip -r ../deployment-package.zip .
-cd ..
+# Update the deployed Lambda to use Secrets Manager
+aws lambda update-function-configuration \
+  --function-name floodlens-ai-FloodLensApiFunction-XXXXX \
+  --environment Variables='{APP_ENV=demo,AI_PROVIDER_MODE=live,...}'
 ```
 
-2. **Create Lambda function via AWS Console**
-- Go to AWS Lambda Console
-- Create function: "afrifashion3d-api"
-- Runtime: Python 3.11
-- Upload deployment-package.zip
-- Set handler: `lambda_function.lambda_handler`
-- Memory: 512 MB
-- Timeout: 30 seconds
+## Step 5: Deploy Frontend to AWS Amplify
 
-3. **Configure environment variables**
-Add all variables from `.env.example`
+1. Push code to GitHub repository `floodlens-ai`
+2. In AWS Console → Amplify Hosting → Create app → Connect to GitHub
+3. Select the repository and `main` branch
+4. Amplify auto-detects `amplify.yml` at the repo root
+5. Set Amplify environment variables:
+   - `VITE_API_BASE_URL` = your API Gateway URL from Step 2 (e.g. `https://abc123.execute-api.us-east-1.amazonaws.com/prod`)
+6. Do NOT set any of these in Amplify:
+   - `MODEL_API_KEY`
+   - `DATABASE_URL`
+   - `AWS_SECRET_ACCESS_KEY`
+   - Any private inference keys
+7. Deploy and verify the frontend loads
 
-4. **Create IAM role with policies**
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:GetObject",
-        "s3:PutObject"
-      ],
-      "Resource": "arn:aws:s3:::your-bucket/*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:Query",
-        "dynamodb:Scan"
-      ],
-      "Resource": [
-        "arn:aws:dynamodb:*:*:table/fashion_users",
-        "arn:aws:dynamodb:*:*:table/fashion_garments"
-      ]
-    },
-    {
-      "Effect": "Allow",
-      "Action": "rekognition:DetectLabels",
-      "Resource": "*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": "bedrock:InvokeModel",
-      "Resource": "*"
-    }
-  ]
-}
-```
+## Step 6: Configure CORS
 
-5. **Create API Gateway**
-- Create HTTP API
-- Add integration to Lambda function
-- Configure CORS
-- Deploy to stage
+The SAM template configures CORS on API Gateway to allow the `FrontendOrigin` parameter.
+After your Amplify domain is known, update the stack:
 
----
-
-## Post-Deployment Setup
-
-### 1. Create DynamoDB Tables
 ```bash
-python setup_dynamodb.py
+cd infrastructure/aws-sam
+sam deploy --parameter-overrides FrontendOrigin=https://main.d12345.amplifyapp.com
 ```
 
-Or use the SAM template (tables created automatically).
+## Step 7: Enable AI Features (Optional)
 
-### 2. Set up S3 Lifecycle Policy
+To enable live Meta Model API calls:
+
+1. Store `MODEL_API_KEY` in Secrets Manager (Step 4)
+2. Update Lambda environment:
+   - `AI_PROVIDER_MODE=live`
+   - `ENABLE_AI_IMAGE_ANALYSIS=true`
+   - `ENABLE_AI_VOICE_TRANSCRIPTION=true` (if needed)
+   - `ENABLE_SAM_SEGMENTATION=true` (if needed)
+   - `DEMO_MODE=false`
+3. Redeploy: `sam deploy`
+
+## Environment Variables Reference
+
+### Frontend (Amplify — public only)
+| Variable | Example | Description |
+|---|---|---|
+| `VITE_API_BASE_URL` | `https://abc123.execute-api.us-east-1.amazonaws.com/prod` | API Gateway URL |
+
+### Backend (Lambda — server-side only)
+| Variable | Example | Description |
+|---|---|---|
+| `APP_ENV` | `demo` | Environment |
+| `FRONTEND_ORIGIN` | `https://main.d12345.amplifyapp.com` | CORS origin |
+| `DATABASE_URL` | `postgresql+psycopg://...` | RDS connection |
+| `S3_MEDIA_BUCKET` | `floodlens-media-us-east-1-123456` | Media bucket |
+| `MODEL_API_KEY` | (from Secrets Manager) | Meta API key |
+| `AI_PROVIDER_MODE` | `live` or `mock` | AI mode |
+| `ENABLE_AI_IMAGE_ANALYSIS` | `true` | Enable Muse Spark |
+| `ENABLE_AI_VOICE_TRANSCRIPTION` | `true` | Enable Muse Voice |
+| `ENABLE_SAM_SEGMENTATION` | `true` | Enable SAM 3.1 |
+| `SQS_MEDIA_ANALYSIS_QUEUE_URL` | `https://sqs...` | SQS queue |
+| `DEMO_MODE` | `false` | Demo banner |
+
+## Teardown
+
 ```bash
-python scripts/setup_s3_lifecycle.py
+cd infrastructure/aws-sam
+sam delete --stack-name floodlens-ai
 ```
-
-### 3. Test the API
-```bash
-# Get API URL from deployment output
-export API_URL="https://your-api-id.execute-api.us-east-1.amazonaws.com"
-
-# Test health endpoint
-curl $API_URL/health
-
-# Test signup
-curl -X POST $API_URL/auth/signup \
-  -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","password":"Test123!@#"}'
-```
-
----
-
-## Lambda Configuration
-
-### Recommended Settings
-
-**Memory**: 512 MB
-- Sufficient for image processing
-- Good balance of cost/performance
-
-**Timeout**: 30 seconds
-- Handles Bedrock API calls
-- Allows for image processing
-
-**Concurrency**: 
-- Reserved: 5 (Free Tier: 1000 concurrent executions)
-- Provisioned: 0 (use on-demand)
-
-**Environment Variables**:
-```
-SECRET_KEY=<your-secret-key>
-AWS_REGION=us-east-1
-S3_BUCKET_NAME=<your-bucket>
-ALLOWED_ORIGINS=https://your-frontend.com
-ENVIRONMENT=production
-MAX_FILE_SIZE=5242880
-IMAGE_MAX_DIMENSION=1024
-JPEG_QUALITY=85
-MAX_UPLOADS_PER_USER_MONTH=10
-MAX_AI_REQUESTS_PER_USER_MONTH=5
-ENABLE_BEDROCK=true
-BEDROCK_MODEL_ID=anthropic.claude-3-haiku-20240307-v1:0
-BEDROCK_MAX_TOKENS=1000
-```
-
----
-
-## Cost Optimization for Lambda
-
-### Lambda Free Tier
-- **1 million requests per month**
-- **400,000 GB-seconds of compute time**
-
-### Estimated Costs (Beyond Free Tier)
-- Requests: $0.20 per 1M requests
-- Compute: $0.0000166667 per GB-second
-
-### Example Usage (100% Free)
-- 100 users
-- 10 uploads/user/month = 1,000 requests
-- 5 AI analyses/user/month = 500 requests
-- Average execution: 3 seconds @ 512MB
-
-**Total**: 1,500 requests × 3s × 0.5GB = 2,250 GB-seconds
-**Cost**: FREE (well within limits)
-
----
-
-## Monitoring
-
-### CloudWatch Logs
-```bash
-# View logs
-aws logs tail /aws/lambda/afrifashion3d-api --follow
-
-# Filter errors
-aws logs filter-pattern /aws/lambda/afrifashion3d-api --filter-pattern "ERROR"
-```
-
-### CloudWatch Metrics
-- Invocations
-- Duration
-- Errors
-- Throttles
-- Concurrent executions
-
-### Set up Alarms
-```bash
-aws cloudwatch put-metric-alarm \
-  --alarm-name lambda-errors \
-  --metric-name Errors \
-  --namespace AWS/Lambda \
-  --statistic Sum \
-  --period 300 \
-  --threshold 10 \
-  --comparison-operator GreaterThanThreshold
-```
-
----
 
 ## Troubleshooting
 
-### Common Issues
-
-**1. Import errors**
-```
-Solution: Ensure all dependencies are in the deployment package
-```
-
-**2. Timeout errors**
-```
-Solution: Increase Lambda timeout to 30 seconds
-```
-
-**3. Memory errors**
-```
-Solution: Increase memory to 512MB or 1024MB
-```
-
-**4. Permission errors**
-```
-Solution: Check IAM role has required policies
-```
-
-**5. Cold start latency**
-```
-Solution: Use provisioned concurrency or keep functions warm
-```
-
----
-
-## CI/CD Pipeline
-
-### GitHub Actions Example
-```yaml
-name: Deploy to Lambda
-
-on:
-  push:
-    branches: [main]
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-python@v2
-        with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-      - name: Deploy with Serverless
-        run: |
-          npm install -g serverless
-          serverless deploy --stage prod
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-```
-
----
-
-## Security Best Practices
-
-1. **Use AWS Secrets Manager** for sensitive data
-2. **Enable AWS WAF** for API Gateway
-3. **Use VPC** for Lambda (if accessing private resources)
-4. **Enable CloudTrail** for audit logging
-5. **Use least privilege IAM roles**
-6. **Enable API Gateway throttling**
-7. **Use custom domain with SSL**
-
----
-
-## Performance Optimization
-
-1. **Reduce cold starts**
-   - Keep functions warm with CloudWatch Events
-   - Use provisioned concurrency for critical functions
-
-2. **Optimize package size**
-   - Remove unnecessary dependencies
-   - Use Lambda layers for common libraries
-
-3. **Connection pooling**
-   - Reuse AWS SDK clients
-   - Cache DynamoDB connections
-
-4. **Async processing**
-   - Use SQS for long-running tasks
-   - Offload heavy processing to Step Functions
-
----
-
-## Rollback Strategy
-
-### Serverless Framework
-```bash
-serverless rollback --timestamp <timestamp>
-```
-
-### AWS SAM
-```bash
-aws cloudformation update-stack \
-  --stack-name afrifashion3d-api \
-  --use-previous-template
-```
-
-### Manual
-- Use Lambda versions and aliases
-- Keep previous deployment packages
-- Use CloudFormation change sets
-
----
-
-## Additional Resources
-
-- [AWS Lambda Documentation](https://docs.aws.amazon.com/lambda/)
-- [Serverless Framework Docs](https://www.serverless.com/framework/docs)
-- [AWS SAM Documentation](https://docs.aws.amazon.com/serverless-application-model/)
-- [Mangum Documentation](https://mangum.io/)
+| Issue | Fix |
+|---|---|
+| CORS error in browser | Ensure `FRONTEND_ORIGIN` matches your Amplify domain exactly |
+| 500 on API calls | Check CloudWatch logs for the Lambda function |
+| DB connection errors | Verify RDS security group allows Lambda access |
+| SQS jobs not processing | Check worker Lambda CloudWatch logs and DLQ |
+| AI calls failing | Verify `MODEL_API_KEY` in Secrets Manager and `AI_PROVIDER_MODE=live` |
