@@ -1,0 +1,63 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Temporary FloodLens database migration Lambda
+
+Parameters:
+  DBName:
+    Type: String
+    Default: floodlens
+
+  DBUser:
+    Type: String
+    Default: floodlens
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 41
+    AllowedPattern: '[A-Za-z0-9]+'
+
+  DBHost:
+    Type: String
+    Default: floodlens-ai-floodlensdb-xia8dz2hw3om.cstm08qqy3w3.us-east-1.rds.amazonaws.com
+
+  DBPort:
+    Type: Number
+    Default: 5432
+
+Resources:
+  FloodLensMigrationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../../backend
+      Handler: app.migration_handler.handler
+      Runtime: python3.12
+      MemorySize: 512
+      Timeout: 300
+
+      VpcConfig:
+        SubnetIds:
+          - subnet-0019e9c5b334d6a4f
+          - subnet-09d1e8bfb0ade4d79
+        SecurityGroupIds:
+          - sg-058b7e615fd206377
+
+      Environment:
+        Variables:
+          DATABASE_URL: !Sub
+            - 'postgresql+psycopg://${DBUser}:${DBPassword}@${DBHost}:${DBPort}/${DBName}'
+            - DBUser: !Ref DBUser
+              DBPassword: !Ref DBPassword
+              DBHost: !Ref DBHost
+              DBPort: !Ref DBPort
+              DBName: !Ref DBName
+
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+Outputs:
+  MigrationFunctionName:
+    Description: Temporary migration Lambda function name
+    Value: !Ref FloodLensMigrationFunction

@@ -11,6 +11,9 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.models import *  # noqa: F401, F403 — import all models so they register on Base
 
+import selectors
+import sys
+
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -54,7 +57,16 @@ def run_migrations_online() -> None:
             await connection.run_sync(do_run_migrations)
         await connectable.dispose()
 
-    asyncio.run(_run_async())
+    #asyncio.run(_run_async())
+    if sys.platform == "win32":
+        asyncio.run(
+            _run_async(),
+            loop_factory=lambda: asyncio.SelectorEventLoop(
+                selectors.SelectSelector()
+            ),
+        )
+    else:
+        asyncio.run(_run_async())
 
 
 if context.is_offline_mode():

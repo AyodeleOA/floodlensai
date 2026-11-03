@@ -35,10 +35,10 @@ class Settings(BaseSettings):
     APP_ENV: AppEnv = AppEnv.local
     APP_NAME: str = "FloodLens AI"
     API_V1_PREFIX: str = "/api/v1"
-    FRONTEND_ORIGIN: str = "http://localhost:5173"
+    FRONTEND_ORIGIN: str = "https://main.dmpm2yei4pgxa.amplifyapp.com/"
 
     # --- Database ---
-    DATABASE_URL: str = "postgresql+psycopg://floodlens:floodlens@localhost:5432/floodlens"
+    DATABASE_URL: str = "postgresql+psycopg://floodlens:FloodlenPass123@floodlens-ai-floodlensdb-xia8dz2hw3om.cstm08qqy3w3.us-east-1.rds.amazonaws.com:5432/floodlens"
 
     # --- S3 / AWS ---
     S3_MEDIA_BUCKET: str = ""

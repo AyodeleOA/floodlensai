@@ -14,7 +14,7 @@ Parameters:
     Default: http://localhost:5173
     Description: >
       The Amplify Hosting frontend URL for CORS.
-      In production, set to your Amplify domain (e.g. https://main.d12345.amplifyapp.com).
+      In production, set to your Amplify domain.
       This must match exactly — CORS will only allow this origin.
 
   ApiGatewayStage:
@@ -39,7 +39,7 @@ Parameters:
   DBPassword:
     Type: String
     NoEcho: true
-    Description: PostgreSQL master password (8-41 alphanumeric characters, change in production)
+    Description: PostgreSQL master password
     MinLength: 8
     MaxLength: 41
     AllowedPattern: '^[A-Za-z0-9]{8,41}$'
@@ -49,6 +49,16 @@ Parameters:
     Type: String
     Default: us-east-1
     Description: AWS region for deployment
+
+  LambdaSubnetIds:
+    Type: CommaDelimitedList
+    Default: subnet-0019e9c5b334d6a4f,subnet-09d1e8bfb0ade4d79
+    Description: Existing private subnets for application Lambda functions
+
+  LambdaSecurityGroupIds:
+    Type: CommaDelimitedList
+    Default: sg-058b7e615fd206377
+    Description: Existing Lambda security group with access to PostgreSQL RDS
 
 Globals:
   Function:
@@ -62,7 +72,11 @@ Globals:
         FRONTEND_ORIGIN: !Ref FrontendOrigin
 
 Resources:
-  # --- API Gateway HTTP API ---
+
+  # =========================================================
+  # API GATEWAY HTTP API
+  # =========================================================
+
   HttpApi:
     Type: AWS::ApiGatewayV2::Api
     Properties:
@@ -72,18 +86,25 @@ Resources:
       CorsConfiguration:
         AllowOrigins:
           - !Ref FrontendOrigin
-        AllowMethods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
-        AllowHeaders: [Content-Type, X-User-Role, X-User-Id, X-User-Email, X-User-Organisation]
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - X-User-Role
+          - X-User-Id
+          - X-User-Email
+          - X-User-Organisation
         MaxAge: 3600
 
-  HttpApiStage:
-    Type: AWS::ApiGatewayV2::Stage
-    Properties:
-      ApiId: !Ref HttpApi
-      StageName: !Ref ApiGatewayStage
-      AutoDeploy: true
+  # =========================================================
+  # LAMBDA: FASTAPI MAIN HANDLER
+  # =========================================================
 
-  # --- Lambda: FastAPI main handler ---
   FloodLensApiFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -91,43 +112,103 @@ Resources:
       Handler: app.lambda_handler.handler
       MemorySize: 512
       Timeout: 30
+
+      VpcConfig:
+        SubnetIds: !Ref LambdaSubnetIds
+        SecurityGroupIds: !Ref LambdaSecurityGroupIds
+
       Environment:
         Variables:
-          DATABASE_URL: !Sub 'postgresql+psycopg://${DBUser}:${DBPassword}@${FloodLensDB.Endpoint.Address}:${FloodLensDB.Endpoint.Port}/${DBName}'
+          DATABASE_URL: !Sub
+            - 'postgresql+psycopg://${DBUser}:${DBPassword}@${DBHost}:${DBPort}/${DBName}'
+            - DBHost: !GetAtt FloodLensDB.Endpoint.Address
+              DBPort: !GetAtt FloodLensDB.Endpoint.Port
           S3_MEDIA_BUCKET: !Ref MediaBucket
           AI_PROVIDER_MODE: mock
           DEMO_MODE: 'true'
+          API_GATEWAY_STAGE: !Ref ApiGatewayStage
+
       Policies:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
         - S3CrudPolicy:
             BucketName: !Ref MediaBucket
+
         - SQSSendMessagePolicy:
             QueueName: !GetAtt MediaAnalysisQueue.QueueName
+
         - Statement:
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
               Resource: '*'
-      Events:
-        ApiEvent:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /{proxy+}
-            Method: ANY
-        HealthLive:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /health/live
-            Method: GET
-        HealthReady:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /health/ready
-            Method: GET
 
-  # --- SQS: Media Analysis Queue ---
+  # =========================================================
+  # API GATEWAY LAMBDA INTEGRATION
+  # =========================================================
+
+  FloodLensApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !GetAtt FloodLensApiFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  # =========================================================
+  # API GATEWAY ROUTES
+  # =========================================================
+
+  FloodLensRootRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'ANY /'
+      Target: !Sub 'integrations/${FloodLensApiIntegration}'
+
+  FloodLensProxyRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'ANY /{proxy+}'
+      Target: !Sub 'integrations/${FloodLensApiIntegration}'
+
+  # =========================================================
+  # API GATEWAY LAMBDA INVOCATION PERMISSION
+  # =========================================================
+
+  FloodLensApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt FloodLensApiFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*'
+        - ApiId: !Ref HttpApi
+
+  # =========================================================
+  # API GATEWAY STAGE
+  # =========================================================
+
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    DependsOn:
+      - FloodLensRootRoute
+      - FloodLensProxyRoute
+      - FloodLensApiGatewayPermission
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: !Ref ApiGatewayStage
+      AutoDeploy: true
+
+  # =========================================================
+  # SQS: MEDIA ANALYSIS QUEUE
+  # =========================================================
+
   MediaAnalysisQueue:
     Type: AWS::SQS::Queue
     Properties:
@@ -142,7 +223,10 @@ Resources:
     Properties:
       QueueName: floodlens-media-analysis-dlq
 
-  # --- Lambda: SQS Worker ---
+  # =========================================================
+  # LAMBDA: SQS WORKER
+  # =========================================================
+
   FloodLensWorkerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -150,20 +234,35 @@ Resources:
       Handler: app.lambda_handler.sqs_worker_handler
       MemorySize: 1024
       Timeout: 120
+
+      VpcConfig:
+        SubnetIds: !Ref LambdaSubnetIds
+        SecurityGroupIds: !Ref LambdaSecurityGroupIds
+
       Environment:
         Variables:
-          DATABASE_URL: !Sub 'postgresql+psycopg://${DBUser}:${DBPassword}@${FloodLensDB.Endpoint.Address}:${FloodLensDB.Endpoint.Port}/${DBName}'
+          DATABASE_URL: !Sub
+            - 'postgresql+psycopg://${DBUser}:${DBPassword}@${DBHost}:${DBPort}/${DBName}'
+            - DBHost: !GetAtt FloodLensDB.Endpoint.Address
+              DBPort: !GetAtt FloodLensDB.Endpoint.Port
           S3_MEDIA_BUCKET: !Ref MediaBucket
           AI_PROVIDER_MODE: mock
           DEMO_MODE: 'true'
+
       Policies:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
         - S3CrudPolicy:
             BucketName: !Ref MediaBucket
+
         - Statement:
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
               Resource: '*'
+
       Events:
         SQSEvent:
           Type: SQS
@@ -172,7 +271,10 @@ Resources:
             BatchSize: 5
             MaximumBatchingWindowInSeconds: 10
 
-  # --- S3 Bucket: Media ---
+  # =========================================================
+  # S3 BUCKET: MEDIA
+  # =========================================================
+
   MediaBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -183,7 +285,10 @@ Resources:
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
 
-  # --- RDS PostgreSQL ---
+  # =========================================================
+  # RDS POSTGRESQL
+  # =========================================================
+
   FloodLensDB:
     Type: AWS::RDS::DBInstance
     Properties:
@@ -199,17 +304,24 @@ Resources:
       BackupRetentionPeriod: 7
       EnablePerformanceInsights: true
       DeletionProtection: false
-      
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
 Outputs:
   ApiUrl:
     Description: API Gateway endpoint URL — set this as VITE_API_BASE_URL in Amplify
     Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${ApiGatewayStage}'
+
   MediaBucket:
-    Description: S3 media bucket name
+    Description: Media bucket name
     Value: !Ref MediaBucket
+
   SQSQueueUrl:
     Description: SQS media analysis queue URL
     Value: !Ref MediaAnalysisQueue
+
   DatabaseEndpoint:
     Description: RDS PostgreSQL endpoint address
     Value: !GetAtt FloodLensDB.Endpoint.Address
