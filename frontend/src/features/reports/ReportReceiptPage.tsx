@@ -43,7 +43,15 @@ export function ReportReceiptPage() {
   // Step 2: Confirm upload and enqueue analysis
   const confirmUploadMutation = useMutation({
     mutationFn: async ({ s3Key, sha256, mimeType, fileSize, mediaType }: { s3Key: string; sha256: string; mimeType: string; fileSize: number; mediaType: string }) => {
-      return apiFetch(`/api/v1/reports/${id}/media-complete`, {
+      return apiFetch<{
+        media_asset_id: string;
+        processing_status: string;
+        analysis_enqueued: boolean;
+        analysis_status: string | null;
+        analysis_provider: string | null;
+        analysis_error: string | null;
+        is_demo_analysis: boolean;
+      }>(`/api/v1/reports/${id}/media-complete`, {
         method: 'POST',
         body: JSON.stringify({ s3_key: s3Key, sha256, mime_type: mimeType, file_size: fileSize, media_type: mediaType }),
       });
@@ -88,7 +96,7 @@ export function ReportReceiptPage() {
 
       // Step 3: Compute SHA-256 and confirm upload
       const sha256 = await computeSHA256(file);
-      await confirmUploadMutation.mutateAsync({
+      const confirmResult = await confirmUploadMutation.mutateAsync({
         s3Key: uploadData.s3_key,
         sha256,
         mimeType: file.type,
@@ -96,7 +104,22 @@ export function ReportReceiptPage() {
         mediaType,
       });
 
-      setUploadSuccess(`${mediaType === 'voice' ? 'Voice note' : 'Photo'} uploaded successfully. AI analysis will begin shortly.`);
+      // Build success message based on analysis result
+      if (mediaType === 'voice') {
+        setUploadSuccess('Voice note uploaded. Use the transcribe option to convert to text.');
+      } else if (confirmResult.analysis_error) {
+        setUploadSuccess(`Photo uploaded, but AI analysis failed: ${confirmResult.analysis_error}`);
+      } else if (confirmResult.analysis_status === 'completed') {
+        const providerLabel = confirmResult.is_demo_analysis ? 'Demo analysis' : `AI analysis (${confirmResult.analysis_provider || 'provider'})`;
+        setUploadSuccess(`Photo uploaded and analyzed. ${providerLabel} completed successfully.`);
+      } else if (confirmResult.analysis_status === 'processing') {
+        setUploadSuccess('Photo uploaded. AI analysis is processing...');
+      } else if (confirmResult.analysis_enqueued) {
+        setUploadSuccess('Photo uploaded. AI analysis has been enqueued.');
+      } else {
+        setUploadSuccess('Photo uploaded successfully.');
+      }
+
       queryClient.invalidateQueries({ queryKey: ['report-receipt', id] });
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Upload failed');
