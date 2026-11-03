@@ -17,6 +17,7 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 # --- Health router ---
+# uvicorn app.main:app --reload
 health_router = APIRouter(tags=["health"])
 
 

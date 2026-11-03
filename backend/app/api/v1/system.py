@@ -41,12 +41,27 @@ async def get_capabilities(
         "facilities",
     ]
 
+    is_mock = settings.AI_PROVIDER_MODE.value in ("mock", "demo")
+    is_live = settings.AI_PROVIDER_MODE.value == "live" and bool(settings.MODEL_API_KEY)
+    # When in live mode but no feature flags enabled, the ModelRouter still
+    # falls back to demo providers — so show "demo_mode" in that case.
+    effective_demo = is_mock or (not is_live) or settings.DEMO_MODE
+
+    def model_status(feature_enabled: bool) -> str:
+        if is_live and feature_enabled:
+            return "connected"
+        if effective_demo:
+            return "demo_mode"
+        return "not_configured"
+
     model_statuses = [
-        {"id": "muse_spark", "status": "demo_mode" if settings.DEMO_MODE else "not_configured"},
-        {"id": "muse_voice", "status": "demo_mode" if settings.DEMO_MODE else "not_configured"},
-        {"id": "sam", "status": "not_configured"},
-        {"id": "muse_glimmer", "status": "connected" if settings.MUSE_GLIMMER_ENABLED else "not_configured"},
-        {"id": "muse_spark_open", "status": "connected" if settings.MUSE_SPARK_OPEN_ENABLED else "not_configured"},
+        {"id": "muse_spark", "status": model_status(settings.ENABLE_AI_IMAGE_ANALYSIS)},
+        {"id": "muse_voice", "status": model_status(settings.ENABLE_AI_VOICE_TRANSCRIPTION)},
+        {"id": "sam", "status": model_status(settings.ENABLE_SAM_SEGMENTATION)},
+        {"id": "muse_image", "status": model_status(settings.ENABLE_MUSE_IMAGE_GENERATION)},
+        {"id": "muse_wonder", "status": model_status(settings.ENABLE_MUSE_WONDER_ANALYST)},
+        {"id": "muse_glimmer", "status": "connected" if settings.MUSE_GLIMMER_ENABLED and settings.MUSE_GLIMMER_BASE_URL else "not_configured"},
+        {"id": "muse_spark_open", "status": "connected" if settings.MUSE_SPARK_OPEN_ENABLED and settings.MUSE_SPARK_OPEN_BASE_URL else "not_configured"},
     ]
 
     return SystemCapabilities(

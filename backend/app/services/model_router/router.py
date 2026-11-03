@@ -223,7 +223,11 @@ _model_router: ModelRouter | None = None
 
 
 def get_model_router() -> ModelRouter:
-    """Get the singleton ModelRouter instance."""
+    """Get the singleton ModelRouter instance.
+
+    Recreates if the AI_PROVIDER_MODE has changed (e.g., Lambda cold start
+    with different env vars than a previous warm invocation).
+    """
     global _model_router
     if _model_router is None:
         _model_router = ModelRouter()

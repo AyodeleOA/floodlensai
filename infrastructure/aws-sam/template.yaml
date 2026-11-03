@@ -124,8 +124,8 @@ Resources:
             - DBHost: !GetAtt FloodLensDB.Endpoint.Address
               DBPort: !GetAtt FloodLensDB.Endpoint.Port
           S3_MEDIA_BUCKET: !Ref MediaBucket
-          AI_PROVIDER_MODE: mock
-          DEMO_MODE: 'true'
+          AI_PROVIDER_MODE: !If [!Equals [!Ref AppEnv, prod], live, mock]
+          DEMO_MODE: !If [!Equals [!Ref AppEnv, prod], 'false', 'true']
           API_GATEWAY_STAGE: !Ref ApiGatewayStage
 
       Policies:
@@ -246,8 +246,8 @@ Resources:
             - DBHost: !GetAtt FloodLensDB.Endpoint.Address
               DBPort: !GetAtt FloodLensDB.Endpoint.Port
           S3_MEDIA_BUCKET: !Ref MediaBucket
-          AI_PROVIDER_MODE: mock
-          DEMO_MODE: 'true'
+          AI_PROVIDER_MODE: !If [!Equals [!Ref AppEnv, prod], live, mock]
+          DEMO_MODE: !If [!Equals [!Ref AppEnv, prod], 'false', 'true']
 
       Policies:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
@@ -279,11 +279,30 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub 'floodlens-media-${AWS::Region}-${AWS::AccountId}'
+
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins:
+              - !Ref FrontendOrigin
+              - http://localhost:5173
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - HEAD
+            AllowedHeaders:
+              - '*'
+            ExposedHeaders:
+              - ETag
+              - x-amz-request-id
+              - x-amz-id-2
+            MaxAge: 3600
 
   # =========================================================
   # RDS POSTGRESQL
@@ -320,8 +339,9 @@ Outputs:
 
   SQSQueueUrl:
     Description: SQS media analysis queue URL
-    Value: !Ref MediaAnalysisQueue
+    Value: !GetAtt MediaAnalysisQueue.QueueUrl
 
   DatabaseEndpoint:
     Description: RDS PostgreSQL endpoint address
     Value: !GetAtt FloodLensDB.Endpoint.Address
+

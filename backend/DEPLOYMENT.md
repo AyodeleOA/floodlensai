@@ -71,7 +71,7 @@ You will be prompted for:
 - **Stack Name**: `floodlens-ai`
 - **AWS Region**: `us-east-1` (or your preferred region)
 - **AppEnv**: `demo` or `prod`
-- **FrontendOrigin**: Your Amplify frontend URL (e.g. `https://main.dmpm2yei4pgxa.amplifyapp.com/`)
+- **FrontendOrigin**: Your Amplify frontend URL (e.g. `https://main.dmpm2yei4pgxa.amplifyapp.com`)
 - **ApiGatewayStage**: `prod`
 - **Confirm changes before deploy**: Y
 - **Allow SAM CLI IAM role creation**: Y
@@ -193,6 +193,7 @@ Run Alembic migrations against the RDS instance as a controlled deployment step:
 ```bash
 # Set DATABASE_URL to your RDS instance
 export DATABASE_URL="postgresql+psycopg://<user>:<password>@<rds-endpoint>:5432/floodlens"
+
 
 # Run migrations
 alembic -c backend/alembic.ini upgrade head

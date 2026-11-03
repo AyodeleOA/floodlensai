@@ -502,23 +502,43 @@ async def get_model_status(
     db: AsyncSession = Depends(get_async_session),
     user: CurrentUser = Depends(require_reviewer),
 ):
-    """Get AI model adapter statuses."""
+    """Get AI model adapter statuses.
+
+    Status values: connected, not_configured, unavailable, demo_mode
+    - demo_mode: AI_PROVIDER_MODE is mock/demo and DEMO_MODE is true (demo fixtures used)
+    - connected: live Meta API configured with MODEL_API_KEY and feature flag enabled
+    - not_configured: no credentials or feature flag disabled
+    """
+    is_mock = settings.AI_PROVIDER_MODE.value in ("mock", "demo")
+    is_live = settings.AI_PROVIDER_MODE.value == "live" and bool(settings.MODEL_API_KEY)
+    # When in live mode but no feature flags enabled, the ModelRouter still
+    # falls back to demo providers — so show "demo_mode" in that case.
+    effective_demo = is_mock or (not is_live) or settings.DEMO_MODE
+
+    # Helper: status for hosted Meta models
+    def hosted_status(feature_enabled: bool) -> str:
+        if is_live and feature_enabled:
+            return "connected"
+        if effective_demo:
+            return "demo_mode"
+        return "not_configured"
+
     items = [
         ModelStatusItem(
             id="muse_spark",
             name="Muse Spark",
             model_id=settings.MUSE_SPARK_MODEL,
             provider_type="hosted_meta",
-            status="connected" if settings.MODEL_API_KEY and settings.AI_PROVIDER_MODE.value == "live" else "demo_mode" if settings.DEMO_MODE else "not_configured",
+            status=hosted_status(settings.ENABLE_AI_IMAGE_ANALYSIS),
             enabled=settings.ENABLE_AI_IMAGE_ANALYSIS,
-            endpoint=settings.MODEL_API_BASE_URL if settings.MODEL_API_KEY else None,
+            endpoint=settings.MODEL_API_BASE_URL if is_live else None,
         ),
         ModelStatusItem(
             id="muse_wonder",
             name="Muse Wonder",
             model_id=settings.MUSE_WONDER_MODEL,
             provider_type="hosted_meta",
-            status="connected" if settings.MODEL_API_KEY and settings.ENABLE_MUSE_WONDER_ANALYST else "not_configured",
+            status=hosted_status(settings.ENABLE_MUSE_WONDER_ANALYST),
             enabled=settings.ENABLE_MUSE_WONDER_ANALYST,
         ),
         ModelStatusItem(
@@ -526,7 +546,7 @@ async def get_model_status(
             name="Muse Image",
             model_id=settings.MUSE_IMAGE_MODEL,
             provider_type="hosted_meta",
-            status="not_configured",
+            status=hosted_status(settings.ENABLE_MUSE_IMAGE_GENERATION),
             enabled=settings.ENABLE_MUSE_IMAGE_GENERATION,
         ),
         ModelStatusItem(
@@ -534,7 +554,7 @@ async def get_model_status(
             name="Muse Voice Transcribe",
             model_id=settings.MUSE_VOICE_MODEL,
             provider_type="hosted_meta",
-            status="connected" if settings.MODEL_API_KEY and settings.ENABLE_AI_VOICE_TRANSCRIPTION else "not_configured",
+            status=hosted_status(settings.ENABLE_AI_VOICE_TRANSCRIPTION),
             enabled=settings.ENABLE_AI_VOICE_TRANSCRIPTION,
         ),
         ModelStatusItem(
@@ -542,7 +562,7 @@ async def get_model_status(
             name="SAM 3.1",
             model_id=settings.SAM_MODEL,
             provider_type="hosted_meta",
-            status="not_configured",
+            status=hosted_status(settings.ENABLE_SAM_SEGMENTATION),
             enabled=settings.ENABLE_SAM_SEGMENTATION,
         ),
         ModelStatusItem(

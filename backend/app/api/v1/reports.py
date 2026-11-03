@@ -11,6 +11,7 @@ from app.api.deps import parse_cursor, get_db as get_db_dep
 from app.core.config import get_settings
 from app.core.security import CurrentUser, get_current_user
 from app.db.session import get_async_session
+from app.models.ai_analysis import AIAnalysis
 from app.models.media_asset import MediaAsset
 from app.models.report import Report
 from app.schemas.report import (
@@ -136,11 +137,11 @@ async def confirm_media_upload(
     if report is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
 
-    # Find the pending media asset
+    # Find the pending media asset by s3_key (unique per upload)
     result = await db.execute(
         select(MediaAsset).where(
             MediaAsset.report_id == report_id,
-            MediaAsset.sha256 == "pending",
+            MediaAsset.s3_key == body.s3_key,
         )
     )
     asset = result.scalar_one_or_none()
@@ -157,14 +158,41 @@ async def confirm_media_upload(
     asset.media_type = body.media_type
     asset.captured_at = body.captured_at
     asset.processing_status = "queued"
+    await db.flush()
 
-    # In local mode, analysis is enqueued but may not run synchronously
-    analysis_enqueued = settings.AI_PROVIDER_MODE != "mock" or settings.DEMO_MODE
+    # Run analysis for photo/video media (voice uses transcribe endpoint)
+    analysis_enqueued = False
+    analysis_status: str | None = None
+    analysis_provider: str | None = None
+    analysis_error: str | None = None
+    is_demo_analysis = False
+
+    if body.media_type in ("photo", "video"):
+        try:
+            from app.workers.media_analysis import process_media_asset
+            result = await process_media_asset(asset.id, db)
+            analysis_status = result.get("status")
+            analysis_provider = result.get("provider")
+            is_demo_analysis = result.get("is_demo", False)
+            analysis_enqueued = analysis_status in ("completed", "processing")
+            asset.processing_status = analysis_status or "queued"
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Media analysis failed: {e}", exc_info=True)
+            asset.processing_status = "analysis_failed"
+            analysis_error = str(e)[:500]
+    else:
+        # Voice or other media — analysis runs via transcribe endpoint
+        analysis_enqueued = True
 
     return MediaCompleteResponse(
         media_asset_id=asset.id,
         processing_status=asset.processing_status,
         analysis_enqueued=analysis_enqueued,
+        analysis_status=analysis_status,
+        analysis_provider=analysis_provider,
+        analysis_error=analysis_error,
+        is_demo_analysis=is_demo_analysis,
     )
 
 
@@ -222,6 +250,32 @@ async def get_report_receipt(
     )
     media_count = result.scalar() or 0
 
+    # Query AI analysis status for this report's media
+    ai_status: str | None = None
+    if media_count > 0:
+        ai_result = await db.execute(
+            select(AIAnalysis)
+            .where(AIAnalysis.report_id == report_id)
+            .order_by(AIAnalysis.created_at.desc())
+            .limit(1)
+        )
+        ai_analysis = ai_result.scalar_one_or_none()
+        if ai_analysis is not None:
+            ai_status = ai_analysis.status
+        else:
+            # No AI analysis records yet — check if any media is queued
+            media_result = await db.execute(
+                select(MediaAsset.processing_status)
+                .where(MediaAsset.report_id == report_id)
+                .order_by(MediaAsset.uploaded_at.desc())
+                .limit(1)
+            )
+            latest_status = media_result.scalar_one_or_none()
+            if latest_status == "queued":
+                ai_status = "pending"
+            elif latest_status == "processing":
+                ai_status = "processing"
+
     return ReportReceipt(
         id=report.id,
         status=report.status,
@@ -231,7 +285,7 @@ async def get_report_receipt(
         latitude_coarse=_coarse_coord(report.latitude),
         longitude_coarse=_coarse_coord(report.longitude),
         media_count=media_count,
-        ai_analysis_status=None,
+        ai_analysis_status=ai_status,
         is_synthetic=report.is_synthetic,
     )
 

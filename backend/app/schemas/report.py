@@ -88,6 +88,10 @@ class MediaCompleteResponse(BaseModel):
     media_asset_id: uuid.UUID
     processing_status: str
     analysis_enqueued: bool
+    analysis_status: str | None = None
+    analysis_provider: str | None = None
+    analysis_error: str | None = None
+    is_demo_analysis: bool = False
 
 
 class VoiceUploadURLRequest(BaseModel):
