@@ -4,6 +4,7 @@ import { LandingPage } from './features/landing/LandingPage';
 import { MapPage } from './features/map/MapPage';
 import { ReportPage } from './features/reports/ReportPage';
 import { ReportReceiptPage } from './features/reports/ReportReceiptPage';
+import { ReportDetailPage } from './features/reports/ReportDetailPage';
 import { DashboardPage } from './features/dashboard/DashboardPage';
 import { DashboardReportsPage } from './features/dashboard/DashboardReportsPage';
 import { DashboardReportDetailPage } from './features/dashboard/DashboardReportDetailPage';
@@ -21,6 +22,7 @@ export default function App() {
         <Route path="/map" element={<MapPage />} />
         <Route path="/report" element={<ReportPage />} />
         <Route path="/report/:id" element={<ReportReceiptPage />} />
+        <Route path="/reports/:id" element={<ReportDetailPage />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/dashboard/reports" element={<DashboardReportsPage />} />
         <Route path="/dashboard/reports/:id" element={<DashboardReportDetailPage />} />

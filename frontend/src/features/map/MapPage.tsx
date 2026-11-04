@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { useQuery } from '@tanstack/react-query';
@@ -359,7 +360,15 @@ export function MapPage() {
           {/* Selected report */}
           {selectedReport && (
             <div className="card p-4">
-              <h3 className="font-medium text-slate-900">Selected Report</h3>
+              <div className="flex items-center justify-between">
+                <h3 className="font-medium text-slate-900">Selected Report</h3>
+                <Link
+                  to={`/reports/${selectedReport.id}`}
+                  className="text-xs text-floodlens-600 hover:underline font-medium"
+                >
+                  View Details →
+                </Link>
+              </div>
               <dl className="mt-2 space-y-1 text-sm">
                 <div className="flex justify-between">
                   <dt className="text-slate-600">Type</dt>
@@ -389,6 +398,35 @@ export function MapPage() {
           <Disclaimer compact />
         </div>
       </div>
+
+      {/* Report list below map on mobile */}
+      {reports && reports.length > 0 && (
+        <div className="mt-4">
+          <h3 className="text-sm font-medium text-slate-700 mb-2">
+            Recent Reports ({reports.length})
+          </h3>
+          <div className="space-y-2">
+            {reports.slice(0, 10).map(r => (
+              <Link
+                key={r.id}
+                to={`/reports/${r.id}`}
+                className="card flex items-start justify-between p-3 transition-colors hover:bg-slate-50"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-slate-800">
+                    {r.report_type.replace('_', ' ')} — {r.hazard_type ?? 'Unknown hazard'}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    {r.severity ?? '—'} severity · {r.status} · {formatDate(r.submitted_at)}
+                  </p>
+                  {r.is_synthetic && <span className="text-xs text-amber-500">Demo</span>}
+                </div>
+                <span className="ml-2 shrink-0 text-xs text-floodlens-600">Details →</span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

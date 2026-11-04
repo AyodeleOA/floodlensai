@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -168,19 +169,52 @@ async def confirm_media_upload(
     is_demo_analysis = False
 
     if body.media_type in ("photo", "video"):
-        try:
-            from app.workers.media_analysis import process_media_asset
-            result = await process_media_asset(asset.id, db)
-            analysis_status = result.get("status")
-            analysis_provider = result.get("provider")
-            is_demo_analysis = result.get("is_demo", False)
-            analysis_enqueued = analysis_status in ("completed", "processing")
-            asset.processing_status = analysis_status or "queued"
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"Media analysis failed: {e}", exc_info=True)
-            asset.processing_status = "analysis_failed"
-            analysis_error = str(e)[:500]
+        # In production with SQS configured, enqueue to SQS for async processing.
+        # In demo/mock mode, run analysis synchronously inline.
+        sqs_url = settings.SQS_MEDIA_ANALYSIS_QUEUE_URL
+
+        if sqq_url := sqs_url:
+            # Async path: send message to SQS for the worker Lambda
+            try:
+                import boto3
+                sqs = boto3.client("sqs", region_name=settings.AWS_REGION)
+                sqs.send_message(
+                    QueueUrl=sqq_url,
+                    MessageBody=json.dumps({"media_asset_id": str(asset.id)}),
+                )
+                analysis_enqueued = True
+                analysis_status = "queued"
+                asset.processing_status = "queued"
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"SQS enqueue failed: {e}", exc_info=True)
+                # Fall back to sync analysis
+                try:
+                    from app.workers.media_analysis import process_media_asset
+                    result = await process_media_asset(asset.id, db)
+                    analysis_status = result.get("status")
+                    analysis_provider = result.get("provider")
+                    is_demo_analysis = result.get("is_demo", False)
+                    analysis_enqueued = analysis_status in ("completed", "processing")
+                    asset.processing_status = analysis_status or "queued"
+                except Exception as e2:
+                    asset.processing_status = "analysis_failed"
+                    analysis_error = str(e2)[:500]
+        else:
+            # Sync path: run analysis inline (demo/mock mode)
+            try:
+                from app.workers.media_analysis import process_media_asset
+                result = await process_media_asset(asset.id, db)
+                analysis_status = result.get("status")
+                analysis_provider = result.get("provider")
+                is_demo_analysis = result.get("is_demo", False)
+                analysis_enqueued = analysis_status in ("completed", "processing")
+                asset.processing_status = analysis_status or "queued"
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Media analysis failed: {e}", exc_info=True)
+                asset.processing_status = "analysis_failed"
+                analysis_error = str(e)[:500]
     else:
         # Voice or other media — analysis runs via transcribe endpoint
         analysis_enqueued = True
@@ -290,6 +324,98 @@ async def get_report_receipt(
     )
 
 
+@router.post("/analyze-test", status_code=status.HTTP_200_OK)
+async def analyze_test(
+    body: dict,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Direct test endpoint for media analysis.
+
+    Two usage modes:
+
+    1. Pass an existing media_asset_id to test analysis on a real uploaded file:
+       {"media_asset_id": "uuid-of-existing-asset"}
+
+    2. Pass raw fields to create a temporary asset and run analysis:
+       {"report_id": "uuid", "s3_key": "reports/.../photo/...", "sha256": "...", "mime_type": "image/jpeg", "file_size": 47103, "media_type": "photo"}
+       (If report_id is omitted, a synthetic test report is created.)
+
+    Returns the full analysis result including scene summary and hazards.
+    AI analysis is stored in the database for persistence.
+    """
+    from app.workers.media_analysis import process_media_asset
+
+    # Mode 1: use an existing media asset
+    if "media_asset_id" in body:
+        try:
+            existing_asset_id = uuid.UUID(body["media_asset_id"])
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid media_asset_id")
+        existing_asset = await db.get(MediaAsset, existing_asset_id)
+        if existing_asset is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media asset not found")
+        existing_asset.processing_status = "queued"
+        await db.flush()
+        result = await process_media_asset(existing_asset_id, db)
+        return {
+            "media_asset_id": str(existing_asset_id),
+            "report_id": str(existing_asset.report_id),
+            "s3_key": existing_asset.s3_key,
+            "analysis_result": result,
+            "status": result.get("status"),
+        }
+
+    # Mode 2: create a temporary asset with the provided fields
+    report_id_str = body.get("report_id")
+    if report_id_str:
+        try:
+            report_id = uuid.UUID(report_id_str)
+            report = await db.get(Report, report_id)
+            if report is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid report_id")
+    else:
+        # Create a synthetic test report
+        report = Report(
+            id=uuid.uuid4(),
+            report_type="flooding",
+            latitude=6.4541,
+            longitude=3.3947,
+            status="submitted",
+            source_channel="test",
+            is_synthetic=True,
+            privacy_consent=True,
+        )
+        db.add(report)
+        await db.flush()
+        report_id = report.id
+
+    # Create a media asset for the test
+    s3_key = body.get("s3_key", "reports/test/photo/test")
+    asset = MediaAsset(
+        id=uuid.uuid4(),
+        report_id=report_id,
+        s3_key=s3_key,
+        media_type=body.get("media_type", "photo"),
+        sha256=body.get("sha256", "0" * 64),
+        mime_type=body.get("mime_type", "image/jpeg"),
+        file_size=body.get("file_size", 0),
+        processing_status="queued",
+    )
+    db.add(asset)
+    await db.flush()
+
+    result = await process_media_asset(asset.id, db)
+    return {
+        "media_asset_id": str(asset.id),
+        "report_id": str(report_id),
+        "s3_key": s3_key,
+        "analysis_result": result,
+        "status": result.get("status"),
+    }
+
+
 @router.get("/public", response_model=PublicReportList)
 async def list_public_reports(
     db: AsyncSession = Depends(get_async_session),
@@ -343,3 +469,87 @@ async def list_public_reports(
         next_cursor=next_cursor,
         has_more=has_more,
     )
+
+
+@router.get("/{report_id}/detail")
+async def get_report_detail(
+    report_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Public report detail — includes media metadata, AI analysis, and voice transcript.
+
+    Returns coarse coordinates only. Private reporter data is not included.
+    Media download URLs are short-lived presigned S3 URLs.
+    """
+    report = await db.get(Report, report_id)
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
+
+    # Fetch media assets
+    media_result = await db.execute(
+        select(MediaAsset).where(MediaAsset.report_id == report_id)
+    )
+    media_assets = media_result.scalars().all()
+
+    # Build media items with presigned download URLs
+    from app.services.media.storage import generate_presigned_download
+    media_items = []
+    for m in media_assets:
+        download_url = generate_presigned_download(m.s3_key, expires_in=900)
+        # Only expose public thumbnail or presigned URL — never private contact data
+        media_items.append({
+            "id": str(m.id),
+            "media_type": m.media_type,
+            "mime_type": m.mime_type,
+            "file_size": m.file_size,
+            "processing_status": m.processing_status,
+            "uploaded_at": m.uploaded_at.isoformat(),
+            "download_url": download_url,
+            "public_thumbnail_key": m.public_thumbnail_key,
+        })
+
+    # Fetch AI analyses
+    ai_result = await db.execute(
+        select(AIAnalysis)
+        .where(AIAnalysis.report_id == report_id)
+        .order_by(AIAnalysis.created_at.desc())
+    )
+    ai_analyses = ai_result.scalars().all()
+
+    ai_items = []
+    for a in ai_analyses:
+        ai_items.append({
+            "id": str(a.id),
+            "provider": a.provider,
+            "model_id": a.model_id,
+            "status": a.status,
+            "scene_summary": a.scene_summary,
+            "structured_result": a.structured_result,
+            "confidence": a.confidence,
+            "limitations": a.limitations,
+            "processing_ms": a.processing_ms,
+            "created_at": a.created_at.isoformat(),
+        })
+
+    return {
+        "id": str(report.id),
+        "report_type": report.report_type,
+        "hazard_type": report.hazard_type,
+        "severity": report.severity,
+        "status": report.status,
+        "description": report.description,
+        "landmark": report.landmark,
+        "water_level": report.water_level,
+        "affects_roads": report.affects_roads,
+        "affects_homes": report.affects_homes,
+        "affects_shops": report.affects_shops,
+        "affects_facilities": report.affects_facilities,
+        "latitude_coarse": _coarse_coord(report.latitude),
+        "longitude_coarse": _coarse_coord(report.longitude),
+        "reported_at": report.reported_at.isoformat() if report.reported_at else None,
+        "submitted_at": report.submitted_at.isoformat(),
+        "is_synthetic": report.is_synthetic,
+        "voice_transcript": report.voice_transcript,
+        "media": media_items,
+        "ai_analyses": ai_items,
+    }

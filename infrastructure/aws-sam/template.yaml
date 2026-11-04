@@ -60,20 +60,6 @@ Parameters:
     Default: sg-058b7e615fd206377
     Description: Existing Lambda security group with access to PostgreSQL RDS
 
-  ModelApiKey:
-    Type: String
-    NoEcho: true
-    Default: ""
-    Description: >
-      Meta Model API key (Bearer token for api.meta.ai).
-      For production, store this in Secrets Manager instead.
-      Leave empty to use demo/mock mode.
-
-  ModelApiBaseUrl:
-    Type: String
-    Default: https://api.meta.ai/v1
-    Description: Meta Model API base URL
-
 Globals:
   Function:
     Runtime: python3.12
@@ -138,21 +124,9 @@ Resources:
             - DBHost: !GetAtt FloodLensDB.Endpoint.Address
               DBPort: !GetAtt FloodLensDB.Endpoint.Port
           S3_MEDIA_BUCKET: !Ref MediaBucket
-          AI_PROVIDER_MODE: !If [!Equals [!Ref AppEnv, prod], live, mock]
-          DEMO_MODE: !If [!Equals [!Ref AppEnv, prod], 'false', 'true']
+          AI_PROVIDER_MODE: mock
+          DEMO_MODE: 'true'
           API_GATEWAY_STAGE: !Ref ApiGatewayStage
-          MODEL_API_BASE_URL: !Ref ModelApiBaseUrl
-          MODEL_API_KEY: !Ref ModelApiKey
-          MUSE_SPARK_MODEL: muse-spark-1.3
-          MUSE_WONDER_MODEL: muse-wonder-1.0
-          MUSE_IMAGE_MODEL: muse-image-1.0
-          MUSE_VOICE_MODEL: muse-voice-transcribe-1.0
-          SAM_MODEL: sam-3.1
-          ENABLE_AI_IMAGE_ANALYSIS: !If [!Equals [!Ref AppEnv, prod], 'true', 'false']
-          ENABLE_AI_VOICE_TRANSCRIPTION: !If [!Equals [!Ref AppEnv, prod], 'true', 'false']
-          ENABLE_SAM_SEGMENTATION: !If [!Equals [!Ref AppEnv, prod], 'true', 'false']
-          ENABLE_MUSE_IMAGE_GENERATION: !If [!Equals [!Ref AppEnv, prod], 'true', 'false']
-          ENABLE_MUSE_WONDER_ANALYST: !If [!Equals [!Ref AppEnv, prod], 'true', 'false']
 
       Policies:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
@@ -272,20 +246,8 @@ Resources:
             - DBHost: !GetAtt FloodLensDB.Endpoint.Address
               DBPort: !GetAtt FloodLensDB.Endpoint.Port
           S3_MEDIA_BUCKET: !Ref MediaBucket
-          AI_PROVIDER_MODE: !If [!Equals [!Ref AppEnv, prod], live, mock]
-          DEMO_MODE: !If [!Equals [!Ref AppEnv, prod], 'false', 'true']
-          MODEL_API_BASE_URL: !Ref ModelApiBaseUrl
-          MODEL_API_KEY: !Ref ModelApiKey
-          MUSE_SPARK_MODEL: muse-spark-1.3
-          MUSE_WONDER_MODEL: muse-wonder-1.0
-          MUSE_IMAGE_MODEL: muse-image-1.0
-          MUSE_VOICE_MODEL: muse-voice-transcribe-1.0
-          SAM_MODEL: sam-3.1
-          ENABLE_AI_IMAGE_ANALYSIS: !If [!Equals [!Ref AppEnv, prod], 'true', 'false']
-          ENABLE_AI_VOICE_TRANSCRIPTION: !If [!Equals [!Ref AppEnv, prod], 'true', 'false']
-          ENABLE_SAM_SEGMENTATION: !If [!Equals [!Ref AppEnv, prod], 'true', 'false']
-          ENABLE_MUSE_IMAGE_GENERATION: !If [!Equals [!Ref AppEnv, prod], 'true', 'false']
-          ENABLE_MUSE_WONDER_ANALYST: !If [!Equals [!Ref AppEnv, prod], 'true', 'false']
+          AI_PROVIDER_MODE: mock
+          DEMO_MODE: 'true'
 
       Policies:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
@@ -317,30 +279,11 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub 'floodlens-media-${AWS::Region}-${AWS::AccountId}'
-
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
-
-      CorsConfiguration:
-        CorsRules:
-          - AllowedOrigins:
-              - !Ref FrontendOrigin
-              - http://localhost:5173
-            AllowedMethods:
-              - GET
-              - PUT
-              - POST
-              - HEAD
-            AllowedHeaders:
-              - '*'
-            ExposedHeaders:
-              - ETag
-              - x-amz-request-id
-              - x-amz-id-2
-            MaxAge: 3600
 
   # =========================================================
   # RDS POSTGRESQL
@@ -377,9 +320,8 @@ Outputs:
 
   SQSQueueUrl:
     Description: SQS media analysis queue URL
-    Value: !GetAtt MediaAnalysisQueue.QueueUrl
+    Value: !Ref MediaAnalysisQueue
 
   DatabaseEndpoint:
     Description: RDS PostgreSQL endpoint address
     Value: !GetAtt FloodLensDB.Endpoint.Address
-

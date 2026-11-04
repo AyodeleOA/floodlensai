@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, Clock, MapPin, Camera, Mic, Upload, Loader2, X } from 'lucide-react';
+import { CheckCircle2, Clock, MapPin, Camera, Mic, Upload, Loader2, X, Eye } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import type { ReportReceipt } from '../../lib/types';
 
@@ -319,6 +319,10 @@ export function ReportReceiptPage() {
 
       {/* Navigation */}
       <div className="mt-4 flex gap-3">
+        <Link to={`/reports/${id}`} className="btn-primary">
+          <Eye className="h-4 w-4" />
+          View Full Details
+        </Link>
         <Link to="/report" className="btn-secondary">
           <Upload className="h-4 w-4" />
           New Report

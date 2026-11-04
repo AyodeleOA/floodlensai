@@ -39,8 +39,23 @@ async def process_voice_transcription(
     router = get_model_router()
 
     try:
+        # Fetch audio bytes from S3
+        from app.workers.media_analysis import _fetch_image_from_s3
+        audio_data: bytes | str = _fetch_image_from_s3(asset.s3_key) or b""
+
+        if not audio_data:
+            if router.is_demo:
+                logger.info(f"No audio bytes — using demo fixture for {media_asset_id}")
+                audio_data = b"demo_audio_fixture"
+            else:
+                logger.warning(
+                    f"Could not fetch audio from S3 key: {asset.s3_key}. "
+                    "Using demo fixture instead."
+                )
+                audio_data = b"demo_audio_fixture"
+
         result, provider_name = await router.transcribe_voice(
-            audio_data=asset.s3_key,
+            audio_data=audio_data,
         )
 
         transcript = result.get("transcript", "")
