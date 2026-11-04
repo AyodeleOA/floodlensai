@@ -71,7 +71,7 @@ You will be prompted for:
 - **Stack Name**: `floodlens-ai`
 - **AWS Region**: `us-east-1` (or your preferred region)
 - **AppEnv**: `demo` or `prod`
-- **FrontendOrigin**: Your Amplify frontend URL (e.g. `https://main.dmpm2yei4pgxa.amplifyapp.com`)
+- **FrontendOrigin**: Your Amplify frontend URL 
 - **ApiGatewayStage**: `prod`
 - **Confirm changes before deploy**: Y
 - **Allow SAM CLI IAM role creation**: Y
@@ -154,7 +154,7 @@ MODEL_API_BASE_URL=https://api.meta.ai/v1
 AI_PROVIDER_MODE=live
 ENABLE_AI_IMAGE_ANALYSIS=true
 DEMO_MODE=false
-SQS_MEDIA_ANALYSIS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/123456789/floodlens-media-analysis
+SQS_MEDIA_ANALYSIS_QUEUE_URL=
 ```
 
 Store `MODEL_API_KEY` and database credentials in **Secrets Manager**, not as plaintext env vars.
@@ -227,7 +227,7 @@ Create a second Lambda function for the SQS worker:
 
 ```bash
 # Get API URL from deployment output
-export API_URL="https://your-api-id.execute-api.us-east-1.amazonaws.com/prod"
+export API_URL=""
 
 # Test health endpoint
 curl $API_URL/health/live
@@ -454,11 +454,3 @@ aws cloudformation rollback-stack --stack-name floodlens-ai --rollback-configura
 - Use CloudFormation change sets for review
 
 ---
-
-## Additional Resources
-
-- [AWS SAM Documentation](https://docs.aws.amazon.com/serverless-application-model/)
-- [Mangum Documentation](https://mangum.io/)
-- [FastAPI on Lambda](https://docs.aws.amazon.com/lambda/latest/dg/services-apigateway.html)
-- [RDS Proxy for Lambda](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-proxy.html)
-- [AWS Secrets Manager](https://docs.aws.amazon.com/secretsmanager/latest/userguide/intro.html)
